@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { createAgent } from '@/hooks/use-agents'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -44,6 +45,7 @@ export default function NewAgentPage() {
   const router = useRouter()
   const [currentStep, setCurrentStep] = useState(1)
   const [isCreating, setIsCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
   const [formData, setFormData] = useState<FormData>({
     name: '',
     shortName: '',
@@ -72,7 +74,7 @@ export default function NewAgentPage() {
       case 2:
         return formData.model
       case 3:
-        return true // 技能可选
+        return true
       case 4:
         return true
       default:
@@ -84,14 +86,18 @@ export default function NewAgentPage() {
 
   const handleCreate = async () => {
     setIsCreating(true)
-    // 模拟创建过程
-    await new Promise(resolve => setTimeout(resolve, 2500))
-    setIsCreating(false)
-    setCreateSuccess(true)
-    // 3秒后跳转
-    setTimeout(() => {
-      router.push('/dashboard')
-    }, 2000)
+    setCreateError(null)
+    try {
+      await createAgent(formData)
+      setIsCreating(false)
+      setCreateSuccess(true)
+      setTimeout(() => {
+        router.push('/dashboard')
+      }, 2000)
+    } catch (err: any) {
+      setIsCreating(false)
+      setCreateError(err.message || '创建失败')
+    }
   }
 
   // 创建成功界面
@@ -305,6 +311,11 @@ export default function NewAgentPage() {
                   </div>
                 </dl>
               </div>
+              {createError && (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive">
+                  {createError}
+                </div>
+              )}
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
                 <strong>创建后将执行：</strong>
                 <ul className="mt-2 list-inside list-disc space-y-1 text-amber-600 dark:text-amber-400">
