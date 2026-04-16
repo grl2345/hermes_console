@@ -19,6 +19,8 @@ services:
       HERMES_LABEL_VALUE: ${HERMES_LABEL_VALUE-true}
       HERMES_NAME_PREFIX: ${HERMES_NAME_PREFIX-hermes-}
       HERMES_SKILLS_DIR: ${HERMES_SKILLS_DIR-/root/.claude/skills}
+      HERMES_TASK_HANDLER: ${HERMES_TASK_HANDLER-/hermes/run-task.sh}
+      HERMES_TIMEZONE: ${HERMES_TIMEZONE-Asia/Shanghai}
     volumes:
       # 关键：挂载宿主机 Docker socket，让后端能管理其他容器
       # 注意：非 read-only，后续阶段 3 的启停重启需要写权限

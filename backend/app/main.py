@@ -14,7 +14,17 @@ from fastapi.responses import JSONResponse
 
 from .config import settings
 from .docker_client import DockerUnavailableError, get_client
-from .routers import agents, auth, dashboard, health, server, skills, tasks
+from .routers import (
+    agents,
+    auth,
+    dashboard,
+    health,
+    scheduled_tasks,
+    server,
+    skills,
+    tasks,
+)
+from .services.scheduled_tasks import start_scheduler, stop_scheduler
 from .store.memory import auth_store
 
 logging.basicConfig(
@@ -41,8 +51,13 @@ async def lifespan(app: FastAPI):
         # 不阻断启动，/health 会报告 degraded；阶段 2 的 /agents 调用时再抛
         logger.warning("Docker 未连通：%s", exc)
 
+    # 启动 APScheduler（阶段 7）
+    start_scheduler()
+
     yield
-    # 关闭：无资源需要显式释放
+
+    # 关闭：停掉 APScheduler
+    stop_scheduler()
 
 
 app = FastAPI(
@@ -75,6 +90,7 @@ app.include_router(auth.router)
 app.include_router(agents.router)
 app.include_router(skills.router)
 app.include_router(tasks.router)
+app.include_router(scheduled_tasks.router)
 app.include_router(dashboard.router)
 app.include_router(server.router)
 

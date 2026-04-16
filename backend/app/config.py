@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # 技能文件默认目录（可被容器 label `hermes.skillsDir` 覆盖）
     hermes_skills_dir: str = "/root/.claude/skills"
 
+    # 定时任务 cron 到点时，在 agent 容器内执行的脚本
+    # 调用形式：<handler> <task-name>
+    # 可被容器 label `hermes.taskHandler` 覆盖
+    hermes_task_handler: str = "/hermes/run-task.sh"
+
+    # 调度器时区；影响 cron 解析和 nextRun 计算
+    hermes_timezone: str = "Asia/Shanghai"
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
