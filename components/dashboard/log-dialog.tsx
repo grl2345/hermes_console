@@ -13,39 +13,39 @@ interface LogEntry {
   message: string
 }
 
-// 模拟日志数据
-const generateMockLogs = (agentName: string): LogEntry[] => {
-  const levels: LogEntry['level'][] = ['info', 'warn', 'error', 'debug']
-  const messages = [
-    '接收到新任务请求',
-    '正在连接 Redis Streams...',
-    '任务路由完成，分派给目标 Agent',
-    '执行 GA4 API 查询',
-    '成功获取数据，共 1,247 条记录',
-    '生成报告中...',
-    '报告生成完成，耗时 2.3s',
-    '任务完成，通知秘书长',
-    '等待新任务...',
-    'Token 消耗：2,145',
-    '心跳检测正常',
-    '内存使用：256MB / 512MB',
-    'API 调用限额：45/100',
-    '定时任务触发：每日流量汇总',
-  ]
-  
-  const logs: LogEntry[] = []
-  const now = new Date()
-  
-  for (let i = 0; i < 50; i++) {
-    const time = new Date(now.getTime() - (50 - i) * 5000)
-    logs.push({
-      timestamp: time.toLocaleTimeString('zh-CN', { hour12: false }),
-      level: levels[Math.floor(Math.random() * levels.length)],
-      message: `[${agentName}] ${messages[Math.floor(Math.random() * messages.length)]}`,
-    })
+function parseLogLine(raw: string): LogEntry | null {
+  // 尝试解析 JSON 格式日志
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed.timestamp && parsed.message) {
+      return {
+        timestamp: parsed.timestamp,
+        level: parsed.level || 'info',
+        message: parsed.message,
+      }
+    }
+  } catch {}
+
+  // 尝试解析常见文本格式：[TIMESTAMP] [LEVEL] MESSAGE
+  const match = raw.match(/^\[?(\d{2}:\d{2}:\d{2})\]?\s*\[?(info|warn|error|debug)\]?\s*(.+)/i)
+  if (match) {
+    return {
+      timestamp: match[1],
+      level: match[2].toLowerCase() as LogEntry['level'],
+      message: match[3],
+    }
   }
-  
-  return logs
+
+  // 无法解析时作为 info 原样输出
+  if (raw.trim()) {
+    return {
+      timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      level: 'info',
+      message: raw.trim(),
+    }
+  }
+
+  return null
 }
 
 interface LogDialogProps {
@@ -57,37 +57,64 @@ interface LogDialogProps {
 export function LogDialog({ agent, open, onOpenChange }: LogDialogProps) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [isPaused, setIsPaused] = useState(false)
+  const [isConnected, setIsConnected] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
-  
+  const eventSourceRef = useRef<EventSource | null>(null)
+
+  // 建立 SSE 日志连接
   useEffect(() => {
-    if (open) {
-      setLogs(generateMockLogs(agent.name))
-    }
-  }, [open, agent.name])
-  
-  // 模拟实时日志
-  useEffect(() => {
-    if (!open || isPaused || agent.status === 'offline') return
-    
-    const interval = setInterval(() => {
-      const newLog: LogEntry = {
-        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-        level: Math.random() > 0.9 ? 'warn' : Math.random() > 0.95 ? 'error' : 'info',
-        message: `[${agent.name}] 处理中... ${Math.random().toString(36).slice(2, 8)}`,
+    if (!open || isPaused) {
+      // 暂停或关闭时断开连接
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
+        eventSourceRef.current = null
+        setIsConnected(false)
       }
-      setLogs(prev => [...prev.slice(-99), newLog])
-    }, 2000)
-    
-    return () => clearInterval(interval)
-  }, [open, isPaused, agent.name, agent.status])
-  
+      return
+    }
+
+    const es = new EventSource(`/api/agents/${agent.id}/logs`)
+    eventSourceRef.current = es
+
+    es.onopen = () => {
+      setIsConnected(true)
+    }
+
+    es.onmessage = (event) => {
+      const entry = parseLogLine(event.data)
+      if (entry) {
+        setLogs(prev => [...prev.slice(-499), entry])
+      }
+    }
+
+    es.onerror = () => {
+      setIsConnected(false)
+      es.close()
+      eventSourceRef.current = null
+    }
+
+    return () => {
+      es.close()
+      eventSourceRef.current = null
+      setIsConnected(false)
+    }
+  }, [open, isPaused, agent.id])
+
+  // 关闭时清空
+  useEffect(() => {
+    if (!open) {
+      setLogs([])
+      setIsPaused(false)
+    }
+  }, [open])
+
   // 自动滚动到底部
   useEffect(() => {
     if (!isPaused && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [logs, isPaused])
-  
+
   const getLevelColor = (level: LogEntry['level']) => {
     switch (level) {
       case 'error': return 'text-red-500'
@@ -96,7 +123,7 @@ export function LogDialog({ agent, open, onOpenChange }: LogDialogProps) {
       default: return 'text-muted-foreground'
     }
   }
-  
+
   const handleDownload = () => {
     const content = logs.map(l => `${l.timestamp} [${l.level.toUpperCase()}] ${l.message}`).join('\n')
     const blob = new Blob([content], { type: 'text/plain' })
@@ -120,6 +147,9 @@ export function LogDialog({ agent, open, onOpenChange }: LogDialogProps) {
               <div>
                 <span className="text-foreground">{agent.name}</span>
                 <span className="ml-2 text-sm font-normal text-muted-foreground">容器日志</span>
+                {isConnected && (
+                  <span className="ml-2 inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                )}
               </div>
             </DialogTitle>
             <div className="flex items-center gap-2">
@@ -153,11 +183,13 @@ export function LogDialog({ agent, open, onOpenChange }: LogDialogProps) {
             </div>
           </div>
         </DialogHeader>
-        
+
         <ScrollArea className="flex-1" ref={scrollRef}>
           <div className="bg-slate-950 p-4 font-mono text-xs leading-relaxed min-h-full">
             {logs.length === 0 ? (
-              <div className="text-slate-500 text-center py-8">暂无日志</div>
+              <div className="text-slate-500 text-center py-8">
+                {isConnected ? '等待日志...' : '正在连接...'}
+              </div>
             ) : (
               logs.map((log, i) => (
                 <div key={i} className="flex gap-3 py-0.5 hover:bg-slate-900/50">
@@ -171,10 +203,10 @@ export function LogDialog({ agent, open, onOpenChange }: LogDialogProps) {
             )}
           </div>
         </ScrollArea>
-        
+
         <div className="px-4 py-2 border-t border-border/60 bg-muted/30 flex items-center justify-between text-xs text-muted-foreground">
           <span>容器 ID: {agent.containerId}</span>
-          <span>{logs.length} 条日志 {isPaused && '(已暂停)'}</span>
+          <span>{logs.length} 条日志 {isPaused && '(已暂停)'} {!isConnected && !isPaused && '(未连接)'}</span>
         </div>
       </DialogContent>
     </Dialog>

@@ -3,7 +3,9 @@
 import { use, useState } from 'react'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { getAgentById, getTasksByAgentId, getSkillsByAgentId, agents } from '@/lib/mock-data'
+import { useAgent, useAgents } from '@/hooks/use-agents'
+import { useTasks } from '@/hooks/use-tasks'
+import { useSkills } from '@/hooks/use-skills'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { StatusBadge } from '@/components/dashboard/status-badge'
@@ -11,6 +13,7 @@ import { TaskList } from '@/components/dashboard/task-list'
 import { SkillList } from '@/components/dashboard/skill-list'
 import { LogDialog } from '@/components/dashboard/log-dialog'
 import { ActionDialog } from '@/components/dashboard/action-dialog'
+import { Spinner } from '@/components/ui/spinner'
 import { ChevronRight, FileText, RotateCcw, Power, PowerOff, MoreHorizontal } from 'lucide-react'
 import {
   DropdownMenu,
@@ -26,21 +29,30 @@ export default function AgentDetailPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
-  const agent = getAgentById(id)
-  
+  const { data: agent, isLoading: agentLoading, mutate: refreshAgent } = useAgent(id)
+  const { data: allAgents } = useAgents()
+  const { data: tasks } = useTasks(id, 5000)
+  const { data: skills } = useSkills(id)
+
   const [logOpen, setLogOpen] = useState(false)
   const [actionOpen, setActionOpen] = useState(false)
   const [currentAction, setCurrentAction] = useState<'restart' | 'start' | 'stop'>('restart')
+
+  if (agentLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <Spinner className="h-8 w-8" />
+      </div>
+    )
+  }
 
   if (!agent) {
     notFound()
   }
 
-  const tasks = getTasksByAgentId(id)
-  const skills = getSkillsByAgentId(id)
-  const supervisor = agent.reportsTo ? agents.find(a => a.id === agent.reportsTo) : null
-  const subordinates = agents.filter(a => a.reportsTo === agent.id)
-  
+  const supervisor = agent.reportsTo && allAgents ? allAgents.find(a => a.id === agent.reportsTo) : null
+  const subordinates = allAgents?.filter(a => a.reportsTo === agent.id) || []
+
   const handleAction = (action: 'restart' | 'start' | 'stop') => {
     setCurrentAction(action)
     setActionOpen(true)
@@ -79,9 +91,9 @@ export default function AgentDetailPage({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button 
-            variant="outline" 
-            size="sm" 
+          <Button
+            variant="outline"
+            size="sm"
             className="h-9"
             onClick={() => setLogOpen(true)}
           >
@@ -89,9 +101,9 @@ export default function AgentDetailPage({
             日志
           </Button>
           {agent.status === 'offline' ? (
-            <Button 
-              variant="outline" 
-              size="sm" 
+            <Button
+              variant="outline"
+              size="sm"
               className="h-9 text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-600 dark:text-emerald-400 dark:hover:text-emerald-400"
               onClick={() => handleAction('start')}
             >
@@ -100,18 +112,18 @@ export default function AgentDetailPage({
             </Button>
           ) : (
             <>
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 className="h-9"
                 onClick={() => handleAction('restart')}
               >
                 <RotateCcw className="mr-1.5 h-4 w-4" />
                 重启
               </Button>
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 className="h-9 text-destructive hover:text-destructive"
                 onClick={() => handleAction('stop')}
               >
@@ -199,7 +211,11 @@ export default function AgentDetailPage({
               </Link>
             </CardHeader>
             <CardContent className="pt-0">
-              <TaskList tasks={tasks} compact />
+              {tasks ? (
+                <TaskList tasks={tasks} compact />
+              ) : (
+                <div className="flex justify-center py-4"><Spinner className="h-5 w-5" /></div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -214,23 +230,28 @@ export default function AgentDetailPage({
               </Link>
             </CardHeader>
             <CardContent className="pt-0">
-              <SkillList skills={skills} agentId={agent.id} compact />
+              {skills ? (
+                <SkillList skills={skills} agentId={agent.id} compact />
+              ) : (
+                <div className="flex justify-center py-4"><Spinner className="h-5 w-5" /></div>
+              )}
             </CardContent>
           </Card>
         </div>
       </div>
-      
+
       {/* Dialogs */}
-      <LogDialog 
-        agent={agent} 
-        open={logOpen} 
-        onOpenChange={setLogOpen} 
+      <LogDialog
+        agent={agent}
+        open={logOpen}
+        onOpenChange={setLogOpen}
       />
       <ActionDialog
         agent={agent}
         action={currentAction}
         open={actionOpen}
         onOpenChange={setActionOpen}
+        onSuccess={refreshAgent}
       />
     </div>
   )

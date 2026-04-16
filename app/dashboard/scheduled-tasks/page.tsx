@@ -1,7 +1,15 @@
 'use client'
 
 import { useState } from 'react'
-import { scheduledTasks as initialTasks, agents } from '@/lib/mock-data'
+import { useAgents } from '@/hooks/use-agents'
+import {
+  useScheduledTasks,
+  createScheduledTask,
+  updateScheduledTask,
+  deleteScheduledTask,
+  toggleScheduledTask,
+  runScheduledTask,
+} from '@/hooks/use-scheduled-tasks'
 import type { ScheduledTask } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -55,7 +63,6 @@ const defaultForm: TaskForm = {
   agentId: '',
 }
 
-// 常用 cron 表达式
 const cronPresets = [
   { label: '每天 09:00', cron: '0 9 * * *' },
   { label: '每天 18:00', cron: '0 18 * * *' },
@@ -66,7 +73,8 @@ const cronPresets = [
 ]
 
 export default function ScheduledTasksPage() {
-  const [tasks, setTasks] = useState<ScheduledTask[]>(initialTasks)
+  const { data: tasks, isLoading, mutate: refreshTasks } = useScheduledTasks()
+  const { data: agents } = useAgents()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null)
@@ -75,16 +83,15 @@ export default function ScheduledTasksPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null)
 
-  const toggleTask = (taskId: string) => {
-    setTasks(prev =>
-      prev.map(t =>
-        t.id === taskId ? { ...t, enabled: !t.enabled } : t
-      )
-    )
+  const handleToggleTask = async (taskId: string, enabled: boolean) => {
+    try {
+      await toggleScheduledTask(taskId, !enabled)
+      refreshTasks()
+    } catch {}
   }
 
   const getAgentName = (agentId: string) => {
-    return agents.find(a => a.id === agentId)?.name || agentId
+    return agents?.find(a => a.id === agentId)?.name || agentId
   }
 
   const openCreateDialog = () => {
@@ -111,55 +118,37 @@ export default function ScheduledTasksPage() {
 
   const handleSubmit = async () => {
     setIsSubmitting(true)
-    await new Promise(resolve => setTimeout(resolve, 800))
-    
-    if (editingTask) {
-      // 更新任务
-      setTasks(prev =>
-        prev.map(t =>
-          t.id === editingTask.id
-            ? { ...t, ...form }
-            : t
-        )
-      )
-    } else {
-      // 创建新任务
-      const newTask: ScheduledTask = {
-        id: `cron-${Date.now()}`,
-        agentId: form.agentId,
-        name: form.name,
-        cron: form.cron,
-        cronDescription: form.cronDescription,
-        nextRun: '明日 09:00',
-        enabled: true,
+    try {
+      if (editingTask) {
+        await updateScheduledTask(editingTask.id, form)
+      } else {
+        await createScheduledTask(form)
       }
-      setTasks(prev => [...prev, newTask])
+      refreshTasks()
+      setDialogOpen(false)
+    } catch {
+    } finally {
+      setIsSubmitting(false)
     }
-    
-    setIsSubmitting(false)
-    setDialogOpen(false)
   }
 
   const handleDelete = async () => {
     if (!deletingTask) return
-    await new Promise(resolve => setTimeout(resolve, 500))
-    setTasks(prev => prev.filter(t => t.id !== deletingTask.id))
+    try {
+      await deleteScheduledTask(deletingTask.id)
+      refreshTasks()
+    } catch {}
     setDeleteDialogOpen(false)
     setDeletingTask(null)
   }
 
   const handleRunNow = async (task: ScheduledTask) => {
     setRunningTaskId(task.id)
-    await new Promise(resolve => setTimeout(resolve, 1500))
+    try {
+      await runScheduledTask(task.id)
+      refreshTasks()
+    } catch {}
     setRunningTaskId(null)
-    // 更新 lastRun
-    setTasks(prev =>
-      prev.map(t =>
-        t.id === task.id
-          ? { ...t, lastRun: '刚刚', lastStatus: 'success' as const }
-          : t
-      )
-    )
   }
 
   const handleCronPreset = (preset: typeof cronPresets[0]) => {
@@ -187,10 +176,12 @@ export default function ScheduledTasksPage() {
 
       <Card className="mt-6">
         <CardHeader>
-          <CardTitle className="text-base">任务列表 ({tasks.length})</CardTitle>
+          <CardTitle className="text-base">任务列表 ({tasks?.length ?? 0})</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {tasks.length === 0 ? (
+          {isLoading ? (
+            <div className="flex justify-center py-8"><Spinner className="h-6 w-6" /></div>
+          ) : !tasks || tasks.length === 0 ? (
             <div className="py-8 text-center text-muted-foreground">
               暂无定时任务，点击上方按钮创建
             </div>
@@ -237,7 +228,7 @@ export default function ScheduledTasksPage() {
                   </code>
                   <Switch
                     checked={task.enabled}
-                    onCheckedChange={() => toggleTask(task.id)}
+                    onCheckedChange={() => handleToggleTask(task.id, task.enabled)}
                   />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -246,7 +237,7 @@ export default function ScheduledTasksPage() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem 
+                      <DropdownMenuItem
                         onClick={() => handleRunNow(task)}
                         disabled={runningTaskId === task.id}
                       >
@@ -270,7 +261,7 @@ export default function ScheduledTasksPage() {
                         <History className="mr-2 h-4 w-4" />
                         执行历史
                       </DropdownMenuItem>
-                      <DropdownMenuItem 
+                      <DropdownMenuItem
                         className="text-destructive"
                         onClick={() => openDeleteDialog(task)}
                       >
@@ -314,7 +305,7 @@ export default function ScheduledTasksPage() {
                   <SelectValue placeholder="选择 Agent" />
                 </SelectTrigger>
                 <SelectContent>
-                  {agents.map(agent => (
+                  {agents?.map(agent => (
                     <SelectItem key={agent.id} value={agent.id}>
                       {agent.name}
                     </SelectItem>
@@ -357,8 +348,8 @@ export default function ScheduledTasksPage() {
             <Button variant="outline" onClick={() => setDialogOpen(false)}>
               取消
             </Button>
-            <Button 
-              onClick={handleSubmit} 
+            <Button
+              onClick={handleSubmit}
               disabled={!form.name || !form.agentId || !form.cron || isSubmitting}
             >
               {isSubmitting ? (
@@ -380,7 +371,7 @@ export default function ScheduledTasksPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>确认删除</AlertDialogTitle>
             <AlertDialogDescription>
-              确定要删除定时任务 "{deletingTask?.name}" 吗？此操作无法撤销。
+              确定要删除定时任务 &ldquo;{deletingTask?.name}&rdquo; 吗？此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

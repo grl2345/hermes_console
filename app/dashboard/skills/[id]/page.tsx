@@ -3,9 +3,11 @@
 import { use, useState, useMemo } from 'react'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { getSkillById, agents } from '@/lib/mock-data'
+import { useSkill, updateSkill } from '@/hooks/use-skills'
+import { useAgents } from '@/hooks/use-agents'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Spinner } from '@/components/ui/spinner'
 import { ChevronRight, History, ExternalLink } from 'lucide-react'
 
 // 简单的 Markdown 渲染函数
@@ -44,27 +46,53 @@ export default function SkillEditorPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
-  const skill = getSkillById(id)
+  const { data: skill, isLoading, mutate: refreshSkill } = useSkill(id)
+  const { data: agents } = useAgents()
+
+  const [content, setContent] = useState<string | null>(null)
+  const [hasChanges, setHasChanges] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  // 初始化编辑器内容
+  const editorContent = content ?? skill?.content ?? ''
+
+  if (isLoading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Spinner className="h-8 w-8" />
+      </div>
+    )
+  }
 
   if (!skill) {
     notFound()
   }
 
-  const agent = agents.find(a => a.id === skill.agentId)
-  const [content, setContent] = useState(skill.content)
-  const [hasChanges, setHasChanges] = useState(false)
+  const agent = agents?.find(a => a.id === skill.agentId)
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setContent(e.target.value)
-    setHasChanges(e.target.value !== skill.content)
+    const newContent = e.target.value
+    setContent(newContent)
+    setHasChanges(newContent !== skill.content)
+    setSaveError(null)
   }
 
-  const { meta, body } = useMemo(() => parseFrontmatter(content), [content])
-  const renderedHtml = useMemo(() => renderMarkdown(body), [body])
+  const { meta, body } = parseFrontmatter(editorContent)
+  const renderedHtml = renderMarkdown(body)
 
-  const handleSave = () => {
-    alert('保存成功！平台将通过 docker exec 把新的 SKILL.md 写入容器，并发送 SIGHUP 触发热加载。')
-    setHasChanges(false)
+  const handleSave = async () => {
+    setIsSaving(true)
+    setSaveError(null)
+    try {
+      await updateSkill(id, { content: editorContent })
+      setHasChanges(false)
+      refreshSkill()
+    } catch (err: any) {
+      setSaveError(err.message || '保存失败')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   return (
@@ -92,17 +120,23 @@ export default function SkillEditorPage({
                 有未保存改动
               </span>
             )}
+            {saveError && (
+              <span className="rounded-full border border-destructive/20 bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive">
+                {saveError}
+              </span>
+            )}
             <Button variant="outline" size="sm" className="h-8 text-xs">
               <History className="mr-1.5 h-3.5 w-3.5" />
               历史 <ExternalLink className="ml-1 h-3 w-3" />
             </Button>
-            <Button 
-              variant="outline" 
-              size="sm" 
+            <Button
+              variant="outline"
+              size="sm"
               className="h-8 text-xs"
               onClick={() => {
                 setContent(skill.content)
                 setHasChanges(false)
+                setSaveError(null)
               }}
             >
               取消
@@ -111,9 +145,18 @@ export default function SkillEditorPage({
               size="sm"
               className="h-8 text-xs"
               onClick={handleSave}
-              disabled={!hasChanges}
+              disabled={!hasChanges || isSaving}
             >
-              保存并热更新 <ExternalLink className="ml-1 h-3 w-3" />
+              {isSaving ? (
+                <>
+                  <Spinner className="mr-1.5" />
+                  保存中...
+                </>
+              ) : (
+                <>
+                  保存并热更新 <ExternalLink className="ml-1 h-3 w-3" />
+                </>
+              )}
             </Button>
           </div>
         </div>
@@ -128,7 +171,7 @@ export default function SkillEditorPage({
             <span className="text-xs text-muted-foreground">markdown</span>
           </div>
           <textarea
-            value={content}
+            value={editorContent}
             onChange={handleContentChange}
             className="flex-1 resize-none bg-background p-4 font-mono text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
             spellCheck={false}

@@ -2,28 +2,34 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { agents, serverInfo, getDashboardStats } from '@/lib/mock-data'
+import { useAgents } from '@/hooks/use-agents'
+import { useDashboardStats, useServerInfo } from '@/hooks/use-dashboard'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { OrgChart } from '@/components/dashboard/org-chart'
 import { AgentCard } from '@/components/dashboard/agent-card'
-import { RefreshCw, Plus, MoreHorizontal, LayoutGrid, Network } from 'lucide-react'
+import { Spinner } from '@/components/ui/spinner'
+import { Plus, MoreHorizontal, LayoutGrid, Network } from 'lucide-react'
 
 type ViewMode = 'grid' | 'org'
 
 export default function DashboardPage() {
-  const [lastRefresh, setLastRefresh] = useState(serverInfo.lastUpdated)
   const [viewMode, setViewMode] = useState<ViewMode>('org')
-  const stats = getDashboardStats()
+  const { data: agents, isLoading: agentsLoading, mutate: refreshAgents } = useAgents(10000)
+  const { data: stats, isLoading: statsLoading, mutate: refreshStats } = useDashboardStats(10000)
+  const { data: serverInfo, mutate: refreshServer } = useServerInfo(30000)
 
   const handleRefresh = () => {
-    setLastRefresh(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
+    refreshAgents()
+    refreshStats()
+    refreshServer()
   }
 
   const getAgentName = (id: string) => {
-    const agent = agents.find(a => a.id === id)
-    return agent?.name || ''
+    return agents?.find(a => a.id === id)?.name || ''
   }
+
+  const isLoading = agentsLoading || statsLoading
 
   return (
     <div className="min-h-screen p-6">
@@ -32,7 +38,7 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Agent 控制台</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            远程服务器 · {serverInfo.hostname} · 最后更新 {lastRefresh}
+            远程服务器 · {serverInfo?.hostname || '连接中...'} · 最后更新 {serverInfo?.lastUpdated || '--:--'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -57,8 +63,14 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">在线 Agent</p>
             <div className="mt-1 flex items-baseline gap-1">
-              <span className="text-3xl font-semibold tabular-nums text-foreground">{stats.onlineCount}</span>
-              <span className="text-sm text-muted-foreground">/ {stats.totalAgents}</span>
+              {isLoading ? (
+                <Spinner className="h-5 w-5" />
+              ) : (
+                <>
+                  <span className="text-3xl font-semibold tabular-nums text-foreground">{stats?.onlineCount ?? 0}</span>
+                  <span className="text-sm text-muted-foreground">/ {stats?.totalAgents ?? 0}</span>
+                </>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -66,7 +78,11 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">进行中任务</p>
             <div className="mt-1">
-              <span className="text-3xl font-semibold tabular-nums text-foreground">{stats.activeTaskCount}</span>
+              {isLoading ? (
+                <Spinner className="h-5 w-5" />
+              ) : (
+                <span className="text-3xl font-semibold tabular-nums text-foreground">{stats?.activeTaskCount ?? 0}</span>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -74,7 +90,11 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">今日完成</p>
             <div className="mt-1">
-              <span className="text-3xl font-semibold tabular-nums text-foreground">{stats.todayCompleted}</span>
+              {isLoading ? (
+                <Spinner className="h-5 w-5" />
+              ) : (
+                <span className="text-3xl font-semibold tabular-nums text-foreground">{stats?.todayCompleted ?? 0}</span>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -82,7 +102,11 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">今日 Token</p>
             <div className="mt-1">
-              <span className="text-3xl font-semibold tabular-nums text-foreground">{Math.round(stats.todayTokens / 1000)}K</span>
+              {isLoading ? (
+                <Spinner className="h-5 w-5" />
+              ) : (
+                <span className="text-3xl font-semibold tabular-nums text-foreground">{Math.round((stats?.todayTokens ?? 0) / 1000)}K</span>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -96,8 +120,8 @@ export default function DashboardPage() {
             <button
               onClick={() => setViewMode('org')}
               className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                viewMode === 'org' 
-                  ? 'bg-card text-foreground shadow-sm' 
+                viewMode === 'org'
+                  ? 'bg-card text-foreground shadow-sm'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
@@ -107,8 +131,8 @@ export default function DashboardPage() {
             <button
               onClick={() => setViewMode('grid')}
               className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                viewMode === 'grid' 
-                  ? 'bg-card text-foreground shadow-sm' 
+                viewMode === 'grid'
+                  ? 'bg-card text-foreground shadow-sm'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
@@ -120,19 +144,27 @@ export default function DashboardPage() {
 
         {/* Agent Views */}
         <div className="mt-4">
-          {viewMode === 'org' ? (
-            <OrgChart agents={agents} />
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              {agents.map((agent) => (
-                <AgentCard 
-                  key={agent.id} 
-                  agent={agent}
-                  showReportsTo={!!agent.reportsTo}
-                  supervisorName={agent.reportsTo ? getAgentName(agent.reportsTo) : undefined}
-                />
-              ))}
+          {agentsLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Spinner className="h-8 w-8" />
             </div>
+          ) : agents && agents.length > 0 ? (
+            viewMode === 'org' ? (
+              <OrgChart agents={agents} />
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2">
+                {agents.map((agent) => (
+                  <AgentCard
+                    key={agent.id}
+                    agent={agent}
+                    showReportsTo={!!agent.reportsTo}
+                    supervisorName={agent.reportsTo ? getAgentName(agent.reportsTo) : undefined}
+                  />
+                ))}
+              </div>
+            )
+          ) : (
+            <div className="py-12 text-center text-muted-foreground">暂无 Agent</div>
           )}
         </div>
       </div>
