@@ -8,6 +8,10 @@ interface ApiError {
   status: number
 }
 
+interface RequestOptions extends RequestInit {
+  skipAuthRedirect?: boolean
+}
+
 class ApiClientError extends Error {
   status: number
   constructor(message: string, status: number) {
@@ -19,21 +23,22 @@ class ApiClientError extends Error {
 
 async function request<T>(
   path: string,
-  options: RequestInit = {},
+  options: RequestOptions = {},
 ): Promise<T> {
+  const { skipAuthRedirect = false, ...fetchOptions } = options
   const url = `${API_BASE}${path}`
   const res = await fetch(url, {
-    ...options,
+    ...fetchOptions,
     headers: {
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...fetchOptions.headers,
     },
   })
 
   if (!res.ok) {
     if (res.status === 401) {
       // 认证失败，跳转登录
-      if (typeof window !== 'undefined') {
+      if (!skipAuthRedirect && typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.href = '/login'
       }
       throw new ApiClientError('未认证', 401)
@@ -55,8 +60,8 @@ async function request<T>(
 }
 
 export const api = {
-  get<T>(path: string): Promise<T> {
-    return request<T>(path)
+  get<T>(path: string, options?: RequestOptions): Promise<T> {
+    return request<T>(path, options)
   },
 
   post<T>(path: string, body?: unknown): Promise<T> {

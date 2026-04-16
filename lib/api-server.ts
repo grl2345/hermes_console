@@ -8,6 +8,7 @@ interface RemoteRequestOptions {
   method?: string
   body?: unknown
   timeout?: number
+  headers?: Record<string, string>
 }
 
 class RemoteServerError extends Error {
@@ -23,7 +24,7 @@ export async function remoteRequest<T>(
   path: string,
   options: RemoteRequestOptions = {},
 ): Promise<T> {
-  const { method = 'GET', body, timeout = 30000 } = options
+  const { method = 'GET', body, timeout = 30000, headers: customHeaders = {} } = options
 
   const url = `${REMOTE_SERVER_URL}${path}`
   const controller = new AbortController()
@@ -32,6 +33,7 @@ export async function remoteRequest<T>(
   try {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...customHeaders,
     }
     if (REMOTE_SERVER_API_KEY) {
       headers['Authorization'] = `Bearer ${REMOTE_SERVER_API_KEY}`

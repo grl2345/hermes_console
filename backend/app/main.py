@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from .config import settings
 from .docker_client import DockerUnavailableError, get_client
-from .routers import agents, auth, health
+from .routers import agents, auth, dashboard, health, server
 from .store.memory import auth_store
 
 logging.basicConfig(
@@ -73,6 +73,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(agents.router)
+app.include_router(dashboard.router)
+app.include_router(server.router)
 
 
 @app.get("/", tags=["system"])

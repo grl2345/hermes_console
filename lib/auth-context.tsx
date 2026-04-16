@@ -20,7 +20,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // 启动时通过 API 验证当前登录状态
   useEffect(() => {
-    api.get<{ user: User }>('/auth/me')
+    api.get<{ user: User }>('/auth/me', { skipAuthRedirect: true })
       .then(data => setUser(data.user))
       .catch(() => setUser(null))
       .finally(() => setIsLoading(false))
