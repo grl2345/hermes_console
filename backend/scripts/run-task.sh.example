@@ -1,0 +1,50 @@
+#!/usr/bin/env sh
+# ---------------------------------------------------------------------------
+# 阶段 7 定时任务入口脚本示例
+#
+# 放进你的 agent 镜像里（比如 /hermes/run-task.sh），赋 +x 权限。
+# 或者通过宿主机 bind-mount 放进去：
+#   -v /root/hermes/run-task.sh:/hermes/run-task.sh:ro
+#
+# 当 cron 到点，console backend 会执行：
+#   docker exec -u hermes <container> /hermes/run-task.sh "<task name>"
+#
+# 自定义路径：给容器打 label `hermes.taskHandler=/your/path.sh`
+# ---------------------------------------------------------------------------
+
+set -eu
+
+TASK_NAME="${1:-}"
+if [ -z "${TASK_NAME}" ]; then
+  echo "usage: $0 <task-name>" >&2
+  exit 2
+fi
+
+# 日志前缀
+log() { printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${TASK_NAME}" "$*"; }
+
+log "start"
+
+case "${TASK_NAME}" in
+  # --- 根据你的业务扩展 case 分支 ---
+  "每日 Reddit 爬取")
+    log "running crawl_reddit.py"
+    python /app/crawl_reddit.py
+    ;;
+  "日报生成")
+    log "running daily_report.py"
+    python /app/daily_report.py
+    ;;
+  "清理日志")
+    log "rotating logs"
+    find /var/log -name "*.log" -mtime +7 -delete
+    ;;
+  *)
+    # 兜底：把 task name 原样作为 shell 命令跑（慎用；更安全是显式列枚举）
+    # eval "${TASK_NAME}"
+    log "未知任务，忽略"
+    exit 1
+    ;;
+esac
+
+log "done"

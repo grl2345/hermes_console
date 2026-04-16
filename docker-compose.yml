@@ -1,0 +1,69 @@
+###############################################################################
+# Hermes Console —— 前后端一站式部署
+#
+# 推荐部署方式：和 Hermes agent 容器跑在同一台宿主机上，
+# 这样 backend 能直接访问 /var/run/docker.sock 和 /root/hermes/
+#
+# 首次部署：
+#   cp .env.example .env                                    # 前端环境
+#   cp backend/.env.example backend/.env                    # 后端环境（改 secrets！）
+#   docker compose up -d --build
+#
+# 访问：
+#   前端：http://<host>:3000
+#   后端：http://<host>:8080   (通过前端代理层自动接入)
+#   接口文档：http://<host>:8080/docs
+###############################################################################
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: hermes-console-backend:0.1.0
+    container_name: hermes-console-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    env_file:
+      - ./backend/.env
+    environment:
+      # 强制 docker host 为挂载进来的 socket，忽略 .env 里的任何覆盖
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      # 需要写权限：启停 / 创建容器 / 读日志
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 需要写权限：创建新 agent 时建目录 + 写 .env
+      - ${HERMES_AGENT_ROOT:-/root/hermes}:${HERMES_AGENT_ROOT:-/root/hermes}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hermes-console-frontend:0.1.0
+    container_name: hermes-console-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      # 前端在 Next.js API Route 里通过这个地址调用后端
+      # Docker 网络内用服务名访问，不走宿主机回环
+      REMOTE_SERVER_URL: http://backend:8080
+      # 必须和 backend 的 API_KEY 一致；留空则不校验
+      REMOTE_SERVER_API_KEY: ${API_KEY:-}
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

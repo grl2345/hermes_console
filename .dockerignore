@@ -1,0 +1,32 @@
+# Node
+node_modules
+.next
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Git
+.git
+.gitignore
+
+# Env
+.env
+.env*.local
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Backend 自己有独立 Dockerfile
+backend
+
+# 文档（不进入镜像）
+*.md
+!README.md
+
+# 测试构件
+coverage
+.nyc_output
