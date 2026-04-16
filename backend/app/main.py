@@ -24,6 +24,7 @@ from .routers import (
     skills,
     tasks,
 )
+from .services.agent_stats import start_refresher, stop_refresher
 from .services.scheduled_tasks import start_scheduler, stop_scheduler
 from .store.memory import auth_store
 
@@ -53,10 +54,13 @@ async def lifespan(app: FastAPI):
 
     # 启动 APScheduler（阶段 7）
     start_scheduler()
+    # 启动 agent 指标后台刷新（阶段 9）
+    start_refresher()
 
     yield
 
-    # 关闭：停掉 APScheduler
+    # 关闭：停掉刷新任务再关 scheduler
+    stop_refresher()
     stop_scheduler()
 
 

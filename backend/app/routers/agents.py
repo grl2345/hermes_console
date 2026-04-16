@@ -3,10 +3,13 @@
 阶段 2：只读列表 + 详情
 阶段 3：生命周期控制（start / stop / restart）
 阶段 4：日志流（SSE 由 Next.js 代理层包装；后端直接吐 raw bytes）
+阶段 8：一键创建
+阶段 9：实时指标（enrichment + /agents/{id}/stats）
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,12 +19,14 @@ from ..config import settings
 from ..deps import require_api_key
 from ..docker_client import DockerUnavailableError
 from ..schemas.agent import Agent, AgentCreateRequest
-from ..services import agent_creation, agents as agent_service
+from ..services import agent_creation, agent_stats, agents as agent_service
 from ..services.agent_creation import (
     AgentAlreadyExistsError,
     AgentCreationError,
 )
-from ..services.agents import AgentNotFoundError, AgentOperationError
+from ..services.agents import AgentNotFoundError, AgentOperationError, _find_container
+from ..services.scheduled_tasks import _get_tz
+from ..services.tasks import task_store as tasks_store
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +37,43 @@ router = APIRouter(
 )
 
 
+# ---------- 阶段 9：指标富化 ----------
+
+
+def _enrich(agent: Agent) -> Agent:
+    """把缓存的 CPU/内存 + task_store 的任务计数贴到 Agent 上。"""
+    updates: dict = {}
+
+    snap = agent_stats.get_cached(agent.id)
+    if snap is not None:
+        updates["cpu"] = snap.cpu_percent
+        updates["memory"] = snap.memory_mb
+
+    records = tasks_store.list(agent.id)
+    if records:
+        updates["activeTaskCount"] = sum(
+            1 for r in records if r.status in ("pending", "running")
+        )
+        today_start = datetime.now(_get_tz()).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        updates["todayTaskCount"] = sum(
+            1 for r in records if r.started_at >= today_start
+        )
+
+    return agent.model_copy(update=updates) if updates else agent
+
+
 @router.get("", response_model=list[Agent])
 async def list_agents() -> list[Agent]:
     try:
-        return agent_service.list_agents()
+        agents = agent_service.list_agents()
     except DockerUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         )
+    return [_enrich(a) for a in agents]
 
 
 # ---------- 阶段 8：一键创建新 Agent ----------
@@ -78,7 +111,48 @@ async def get_agent(agent_id: str) -> Agent:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"未找到 Agent: {agent_id}",
         )
-    return agent
+    return _enrich(agent)
+
+
+@router.get("/{agent_id}/stats")
+async def agent_stats_endpoint(agent_id: str) -> dict:
+    """返回单个 agent 的实时指标快照。
+
+    - CPU/内存：若缓存新鲜（<=15s）则直接用缓存，否则立即采样一次
+    - Token / 费用：Hermes agent 暂未记账，当前恒为 0
+    """
+    try:
+        container = _find_container(agent_id)
+    except DockerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if container is None:
+        raise HTTPException(status_code=404, detail=f"未找到 Agent: {agent_id}")
+
+    snap = agent_stats.get_cached(agent_id)
+    if snap is None or snap.age_seconds() > 15:
+        snap = agent_stats.sample_now(container)
+
+    if snap is None:
+        # 采样失败（容器停止 / docker 错误等）
+        return {
+            "agentId": agent_id,
+            "cpu": 0.0,
+            "memory": 0.0,
+            "memoryLimit": 0.0,
+            "weeklyTokens": 0,
+            "weeklyCost": 0.0,
+            "updatedAt": None,
+        }
+
+    return {
+        "agentId": agent_id,
+        "cpu": snap.cpu_percent,
+        "memory": snap.memory_mb,
+        "memoryLimit": snap.memory_limit_mb,
+        "weeklyTokens": 0,
+        "weeklyCost": 0.0,
+        "updatedAt": snap.read_at.isoformat(),
+    }
 
 
 # ---------- 阶段 3：启停重启 ----------
