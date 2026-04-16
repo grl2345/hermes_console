@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     # 调度器时区；影响 cron 解析和 nextRun 计算
     hermes_timezone: str = "Asia/Shanghai"
 
+    # ---- Agent 创建（阶段 8）----
+    # 所有 agent 的宿主根目录。与 init_agent.sh 中的 /root/hermes 对齐。
+    # 后端创建新 agent 时会在此目录下生成 `hermes_agent_<name>/`。
+    hermes_agent_root: str = "/root/hermes"
+
+    # 创建 agent 时使用的镜像
+    hermes_agent_image: str = "nousresearch/hermes-agent:latest"
+
+    # 容器内 hermes 用户 / 组 UID（镜像约定为 10000）
+    hermes_container_uid: int = 10000
+    hermes_container_gid: int = 10000
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

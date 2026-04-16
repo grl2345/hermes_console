@@ -12,10 +12,15 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
+from ..config import settings
 from ..deps import require_api_key
 from ..docker_client import DockerUnavailableError
-from ..schemas.agent import Agent
-from ..services import agents as agent_service
+from ..schemas.agent import Agent, AgentCreateRequest
+from ..services import agent_creation, agents as agent_service
+from ..services.agent_creation import (
+    AgentAlreadyExistsError,
+    AgentCreationError,
+)
 from ..services.agents import AgentNotFoundError, AgentOperationError
 
 logger = logging.getLogger(__name__)
@@ -35,6 +40,27 @@ async def list_agents() -> list[Agent]:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
+        )
+
+
+# ---------- 阶段 8：一键创建新 Agent ----------
+
+
+@router.post("", response_model=Agent, status_code=status.HTTP_201_CREATED)
+async def create_agent(payload: AgentCreateRequest) -> Agent:
+    """创建新 agent，等价于 init_agent.sh 的 Python 版 + 自动打 hermes.* label。"""
+    try:
+        return agent_creation.create_agent(payload)
+    except AgentAlreadyExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except DockerUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except AgentCreationError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"权限不足：需要访问 {settings.hermes_agent_root}。错误：{exc}",
         )
 
 

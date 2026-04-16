@@ -21,7 +21,13 @@ services:
       HERMES_SKILLS_DIR: ${HERMES_SKILLS_DIR-/root/.claude/skills}
       HERMES_TASK_HANDLER: ${HERMES_TASK_HANDLER-/hermes/run-task.sh}
       HERMES_TIMEZONE: ${HERMES_TIMEZONE-Asia/Shanghai}
+      HERMES_AGENT_ROOT: ${HERMES_AGENT_ROOT-/root/hermes}
+      HERMES_AGENT_IMAGE: ${HERMES_AGENT_IMAGE-nousresearch/hermes-agent:latest}
+      HERMES_CONTAINER_UID: ${HERMES_CONTAINER_UID-10000}
+      HERMES_CONTAINER_GID: ${HERMES_CONTAINER_GID-10000}
     volumes:
-      # 关键：挂载宿主机 Docker socket，让后端能管理其他容器
-      # 注意：非 read-only，后续阶段 3 的启停重启需要写权限
+      # 挂载宿主机 Docker socket，让后端能管理其他容器
+      # 非 read-only：启停重启 / 创建 agent 需要写权限
       - /var/run/docker.sock:/var/run/docker.sock
+      # 阶段 8 需要：后端要在宿主机 HERMES_AGENT_ROOT 下创建 agent 目录 + 写 .env
+      - ${HERMES_AGENT_ROOT:-/root/hermes}:${HERMES_AGENT_ROOT:-/root/hermes}
