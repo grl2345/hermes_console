@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     # 登录 token 有效期（小时）
     token_ttl_hours: int = 168
 
+    # ---- Agent 识别 ----
+    # 主识别：Docker label `hermes.agent=true`
+    # 兜底识别：容器名以此前缀开头（留空禁用）
+    hermes_label_key: str = "hermes.agent"
+    hermes_label_value: str = "true"
+    hermes_name_prefix: str = "hermes-"
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
