@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Iterator, Optional
 
 from docker.errors import APIError, DockerException, NotFound
 from docker.models.containers import Container
@@ -320,3 +320,65 @@ def restart_agent(agent_id: str) -> Agent:
         raise AgentOperationError(f"重启失败: {exc}") from exc
 
     return _refresh_and_return(container)
+
+
+# ---------- 阶段 4：日志流 ----------
+
+
+def stream_agent_logs(
+    agent_id: str,
+    *,
+    follow: bool = True,
+    tail: int = 200,
+) -> Iterator[bytes]:
+    """返回 docker 容器的日志字节流。
+
+    **同步验证** agent 存在 + docker 可连通；**然后**才返回内部生成器。
+    这样 FastAPI 调用方能在进入 StreamingResponse 之前拿到 NotFound / Unavailable
+    异常，正确映射成 HTTP 状态码。
+
+    - follow=True：持续流式推送；客户端断开时底层 stream 会被关闭
+    - follow=False：一次性返回最近 `tail` 行
+    """
+    container = _find_container(agent_id)
+    if container is None:
+        raise AgentNotFoundError(agent_id)
+
+    try:
+        result = container.logs(
+            stream=follow,
+            follow=follow,
+            tail=tail,
+            stdout=True,
+            stderr=True,
+        )
+    except APIError as exc:
+        logger.exception("读取日志失败 (APIError)")
+        raise AgentOperationError(f"读取日志失败: {_api_error_message(exc)}") from exc
+    except DockerException as exc:
+        logger.exception("读取日志失败")
+        raise AgentOperationError(f"读取日志失败: {exc}") from exc
+
+    def _iter() -> Iterator[bytes]:
+        if not follow:
+            # 非 follow：一次性 bytes，没有 stream 需要释放
+            yield result  # type: ignore[misc]
+            return
+        try:
+            yield from result
+        except GeneratorExit:
+            logger.info("日志流客户端断开: %s", agent_id)
+            raise
+        except DockerException:
+            # 流中异常：直接结束而不抛（HTTP 头已发出）
+            logger.exception("日志流中断")
+        finally:
+            # 不论正常结束、客户端断开、还是异常，都关闭底层 socket
+            closer = getattr(result, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    return _iter()

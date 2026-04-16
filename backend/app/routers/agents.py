@@ -2,13 +2,15 @@
 
 阶段 2：只读列表 + 详情
 阶段 3：生命周期控制（start / stop / restart）
+阶段 4：日志流（SSE 由 Next.js 代理层包装；后端直接吐 raw bytes）
 """
 from __future__ import annotations
 
 import logging
 from typing import Callable
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 
 from ..deps import require_api_key
 from ..docker_client import DockerUnavailableError
@@ -94,3 +96,35 @@ async def stop_agent(agent_id: str) -> dict:
 @router.post("/{agent_id}/restart")
 async def restart_agent(agent_id: str) -> dict:
     return _run_lifecycle(agent_service.restart_agent, agent_id, "restart")
+
+
+# ---------- 阶段 4：日志流 ----------
+
+
+@router.get("/{agent_id}/logs")
+async def get_agent_logs(
+    agent_id: str,
+    follow: bool = Query(default=True, description="true 流式，false 一次性"),
+    tail: int = Query(default=200, ge=1, le=10000),
+):
+    """返回容器日志。
+
+    - 默认 `follow=true`，返回 `text/plain` 字节流；Next.js 代理层会按
+      `data: <chunk>\\n\\n` 封成 SSE 给浏览器 EventSource 消费。
+    - `follow=false` 返回最近 `tail` 行的快照。
+    """
+    try:
+        gen = agent_service.stream_agent_logs(agent_id, follow=follow, tail=tail)
+    except DockerUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except AgentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"未找到 Agent: {agent_id}")
+    except AgentOperationError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    # 禁用中间层缓冲：nginx / proxy 见到 X-Accel-Buffering 就直通
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(gen, media_type="text/plain; charset=utf-8", headers=headers)
