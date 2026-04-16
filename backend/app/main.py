@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from .config import settings
 from .docker_client import DockerUnavailableError, get_client
-from .routers import agents, auth, dashboard, health, server, skills
+from .routers import agents, auth, dashboard, health, server, skills, tasks
 from .store.memory import auth_store
 
 logging.basicConfig(
@@ -74,6 +74,7 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(agents.router)
 app.include_router(skills.router)
+app.include_router(tasks.router)
 app.include_router(dashboard.router)
 app.include_router(server.router)
 
