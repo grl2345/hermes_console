@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     hermes_label_value: str = "true"
     hermes_name_prefix: str = "hermes-"
 
+    # 技能文件默认目录（可被容器 label `hermes.skillsDir` 覆盖）
+    hermes_skills_dir: str = "/root/.claude/skills"
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
