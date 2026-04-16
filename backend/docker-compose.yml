@@ -1,0 +1,21 @@
+services:
+  hermes-backend:
+    build: .
+    image: hermes-console-backend:0.1.0
+    container_name: hermes-console-backend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      PORT: 8080
+      DOCKER_HOST: unix:///var/run/docker.sock
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      API_KEY: ${API_KEY:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@hermes.ai}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_NAME: ${ADMIN_NAME:-Administrator}
+      TOKEN_TTL_HOURS: ${TOKEN_TTL_HOURS:-168}
+    volumes:
+      # 关键：挂载宿主机 Docker socket，让后端能管理其他容器
+      # 注意：非 read-only，后续阶段 3 的启停重启需要写权限
+      - /var/run/docker.sock:/var/run/docker.sock
