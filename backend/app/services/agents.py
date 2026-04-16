@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from docker.errors import DockerException, NotFound
+from docker.errors import APIError, DockerException, NotFound
 from docker.models.containers import Container
 
 from ..config import settings
@@ -16,6 +16,14 @@ from ..docker_client import DockerUnavailableError, get_client
 from ..schemas.agent import Agent, AgentLevel, AgentStatus
 
 logger = logging.getLogger(__name__)
+
+
+class AgentNotFoundError(LookupError):
+    """找不到对应的 Hermes agent。"""
+
+
+class AgentOperationError(RuntimeError):
+    """Docker 操作失败（容器层错误，非连接层）。"""
 
 # 头像默认色板（无 hermes.avatarColor 时按 name 哈希派生）
 _AVATAR_PALETTE = [
@@ -183,14 +191,11 @@ def list_agents() -> list[Agent]:
     return agents
 
 
-def get_agent(agent_id: str) -> Optional[Agent]:
-    """按稳定 id / 容器 id / 容器名 查找单个 Agent。"""
-    try:
-        client = get_client()
-    except DockerUnavailableError:
-        raise
+def _find_container(agent_id: str) -> Optional[Container]:
+    """按稳定 id / 容器 id / 容器名定位容器；仅返回被判定为 Hermes agent 的容器。"""
+    client = get_client()
 
-    # 1) 先尝试按稳定 label hermes.id 匹配
+    # 1) 优先按 label hermes.id 精确匹配
     try:
         matched = client.containers.list(
             all=True,
@@ -198,18 +203,120 @@ def get_agent(agent_id: str) -> Optional[Agent]:
         )
         for c in matched:
             if _is_hermes_container(c):
-                return _container_to_agent(c)
+                return c
     except DockerException:
         logger.exception("按 label 查找失败")
 
-    # 2) 再尝试按容器 id / name
+    # 2) 回退：按容器 id / name
     try:
         container = client.containers.get(agent_id)
         if _is_hermes_container(container):
-            return _container_to_agent(container)
+            return container
     except NotFound:
         pass
     except DockerException:
         logger.exception("按 id/name 查找失败")
 
     return None
+
+
+def get_agent(agent_id: str) -> Optional[Agent]:
+    """按稳定 id / 容器 id / 容器名 查找单个 Agent。"""
+    container = _find_container(agent_id)
+    return _container_to_agent(container) if container is not None else None
+
+
+# ---------- 生命周期控制（阶段 3） ----------
+
+# stop 的 SIGTERM 宽限期（秒）。超过后发 SIGKILL。
+_STOP_TIMEOUT = 10
+
+
+def _api_error_message(exc: APIError) -> str:
+    """安全地提取 docker APIError 的可读信息，避免其 __str__ 因缺字段抛异常。"""
+    explanation = getattr(exc, "explanation", None)
+    if explanation:
+        return str(explanation)
+    try:
+        return str(exc)
+    except Exception:  # noqa: BLE001
+        return "未知错误"
+
+
+def _refresh_and_return(container: Container) -> Agent:
+    """执行动作后重新加载容器状态并返回 Agent。"""
+    try:
+        container.reload()
+    except DockerException:
+        logger.exception("reload 容器状态失败（忽略，继续返回）")
+    return _container_to_agent(container)
+
+
+def start_agent(agent_id: str) -> Agent:
+    """启动容器。若容器已在运行则视为成功（幂等）。"""
+    container = _find_container(agent_id)
+    if container is None:
+        raise AgentNotFoundError(agent_id)
+
+    container.reload()
+    state = container.attrs.get("State", {}) or {}
+    if state.get("Status") == "running" and not state.get("Paused"):
+        logger.info("start: %s 已在运行，幂等成功", agent_id)
+        return _container_to_agent(container)
+
+    try:
+        container.start()
+    except APIError as exc:
+        # 304: 已启动；视为成功
+        if getattr(exc, "status_code", None) == 304:
+            logger.info("start: %s 已启动（304）", agent_id)
+        else:
+            logger.exception("start 失败")
+            raise AgentOperationError(f"启动失败: {_api_error_message(exc)}") from exc
+    except DockerException as exc:
+        logger.exception("start 异常")
+        raise AgentOperationError(f"启动失败: {exc}") from exc
+
+    return _refresh_and_return(container)
+
+
+def stop_agent(agent_id: str) -> Agent:
+    """停止容器。若容器已停止则视为成功（幂等）。"""
+    container = _find_container(agent_id)
+    if container is None:
+        raise AgentNotFoundError(agent_id)
+
+    container.reload()
+    state = container.attrs.get("State", {}) or {}
+    if state.get("Status") not in ("running", "restarting") or state.get("Paused"):
+        logger.info("stop: %s 已非运行态，幂等成功", agent_id)
+        return _container_to_agent(container)
+
+    try:
+        container.stop(timeout=_STOP_TIMEOUT)
+    except APIError as exc:
+        if getattr(exc, "status_code", None) == 304:
+            logger.info("stop: %s 已停止（304）", agent_id)
+        else:
+            logger.exception("stop 失败")
+            raise AgentOperationError(f"停止失败: {_api_error_message(exc)}") from exc
+    except DockerException as exc:
+        logger.exception("stop 异常")
+        raise AgentOperationError(f"停止失败: {exc}") from exc
+
+    return _refresh_and_return(container)
+
+
+def restart_agent(agent_id: str) -> Agent:
+    """重启容器。非运行状态的容器也会被拉起。"""
+    container = _find_container(agent_id)
+    if container is None:
+        raise AgentNotFoundError(agent_id)
+
+    try:
+        container.restart(timeout=_STOP_TIMEOUT)
+    except DockerException as exc:
+        logger.exception("restart 异常")
+        raise AgentOperationError(f"重启失败: {exc}") from exc
+
+    return _refresh_and_return(container)
