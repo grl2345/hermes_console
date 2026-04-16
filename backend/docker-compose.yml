@@ -15,6 +15,9 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       ADMIN_NAME: ${ADMIN_NAME:-Administrator}
       TOKEN_TTL_HOURS: ${TOKEN_TTL_HOURS:-168}
+      HERMES_LABEL_KEY: ${HERMES_LABEL_KEY-hermes.agent}
+      HERMES_LABEL_VALUE: ${HERMES_LABEL_VALUE-true}
+      HERMES_NAME_PREFIX: ${HERMES_NAME_PREFIX-hermes-}
     volumes:
       # 关键：挂载宿主机 Docker socket，让后端能管理其他容器
       # 注意：非 read-only，后续阶段 3 的启停重启需要写权限

@@ -12,6 +12,9 @@ export async function GET() {
 
     const data = await remoteRequest<{ user: any }>('/auth/me', {
       method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
     })
 
     return jsonResponse(data)
