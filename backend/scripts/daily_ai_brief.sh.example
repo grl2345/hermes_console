@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+set -eu
+
+TASK_NAME="${1:-每日AI热点简报}"
+NOW="$(date '+%Y-%m-%d %H:%M:%S')"
+HOSTNAME_NOW="$(hostname 2>/dev/null || echo unknown-host)"
+
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+  echo "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is empty" >&2
+  exit 1
+fi
+
+# TODO: 在这里接入你的真实任务逻辑（爬取/总结/调用模型等）
+SUMMARY="这是占位简报。你可以把这里替换为真实生成内容。"
+
+MESSAGE="【${TASK_NAME}】
+时间：${NOW}
+节点：${HOSTNAME_NOW}
+
+${SUMMARY}"
+
+curl -fsS \
+  --connect-timeout 10 \
+  --max-time 30 \
+  -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+  -d "chat_id=${TELEGRAM_CHAT_ID}" \
+  --data-urlencode "text=${MESSAGE}" >/dev/null
+
+echo "telegram sent for ${TASK_NAME}"

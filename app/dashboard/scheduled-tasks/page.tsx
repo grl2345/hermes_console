@@ -48,6 +48,7 @@ import {
 import { Plus, MoreHorizontal, Pencil, Trash2, Play, History } from 'lucide-react'
 import { Spinner } from '@/components/ui/spinner'
 import { StatusBadge } from '@/components/dashboard/status-badge'
+import { useToast } from '@/hooks/use-toast'
 
 interface TaskForm {
   name: string
@@ -75,6 +76,7 @@ const cronPresets = [
 export default function ScheduledTasksPage() {
   const { data: tasks, isLoading, mutate: refreshTasks } = useScheduledTasks()
   const { data: agents } = useAgents()
+  const { toast } = useToast()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null)
@@ -83,11 +85,25 @@ export default function ScheduledTasksPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null)
 
+  const getErrorMessage = (err: unknown) => {
+    if (err instanceof Error && err.message) return err.message
+    return '请求失败，请稍后重试'
+  }
+
   const handleToggleTask = async (taskId: string, enabled: boolean) => {
     try {
       await toggleScheduledTask(taskId, !enabled)
       refreshTasks()
-    } catch {}
+      toast({
+        title: !enabled ? '定时任务已启用' : '定时任务已暂停',
+      })
+    } catch (err) {
+      toast({
+        title: '操作失败',
+        description: getErrorMessage(err),
+        variant: 'destructive',
+      })
+    }
   }
 
   const getAgentName = (agentId: string) => {
@@ -121,12 +137,19 @@ export default function ScheduledTasksPage() {
     try {
       if (editingTask) {
         await updateScheduledTask(editingTask.id, form)
+        toast({ title: '定时任务已更新' })
       } else {
         await createScheduledTask(form)
+        toast({ title: '定时任务已创建' })
       }
       refreshTasks()
       setDialogOpen(false)
-    } catch {
+    } catch (err) {
+      toast({
+        title: '保存失败',
+        description: getErrorMessage(err),
+        variant: 'destructive',
+      })
     } finally {
       setIsSubmitting(false)
     }
@@ -137,7 +160,14 @@ export default function ScheduledTasksPage() {
     try {
       await deleteScheduledTask(deletingTask.id)
       refreshTasks()
-    } catch {}
+      toast({ title: '定时任务已删除' })
+    } catch (err) {
+      toast({
+        title: '删除失败',
+        description: getErrorMessage(err),
+        variant: 'destructive',
+      })
+    }
     setDeleteDialogOpen(false)
     setDeletingTask(null)
   }
@@ -145,9 +175,25 @@ export default function ScheduledTasksPage() {
   const handleRunNow = async (task: ScheduledTask) => {
     setRunningTaskId(task.id)
     try {
-      await runScheduledTask(task.id)
+      try {
+        await runScheduledTask(task.id)
+      } catch {
+        // 远程后端偶发网络抖动时做一次快速重试
+        await new Promise((resolve) => setTimeout(resolve, 600))
+        await runScheduledTask(task.id)
+      }
       refreshTasks()
-    } catch {}
+      toast({
+        title: '任务已触发执行',
+        description: `${task.name} 已提交执行`,
+      })
+    } catch (err) {
+      toast({
+        title: '执行失败',
+        description: getErrorMessage(err),
+        variant: 'destructive',
+      })
+    }
     setRunningTaskId(null)
   }
 

@@ -1,15 +1,11 @@
 #!/usr/bin/env sh
 # ---------------------------------------------------------------------------
-# 阶段 7 定时任务入口脚本示例
+# 生产可用 run-task.sh 模板
 #
-# 放进你的 agent 镜像里（比如 /hermes/run-task.sh），赋 +x 权限。
-# 或者通过宿主机 bind-mount 放进去：
-#   -v /root/hermes/run-task.sh:/hermes/run-task.sh:ro
-#
-# 当 cron 到点，console backend 会执行：
-#   docker exec -u hermes <container> /hermes/run-task.sh "<task name>"
-#
-# 自定义路径：给容器打 label `hermes.taskHandler=/your/path.sh`
+# 目标：
+# 1) 手动触发与定时触发共用同一入口。
+# 2) 任务成功/失败通过退出码回传给 Hermes Console。
+# 3) 关键节点发送 Telegram 通知，便于留痕。
 # ---------------------------------------------------------------------------
 
 set -eu
@@ -20,31 +16,98 @@ if [ -z "${TASK_NAME}" ]; then
   exit 2
 fi
 
-# 日志前缀
-log() { printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${TASK_NAME}" "$*"; }
+AGENT_ROOT="${HERMES_AGENT_ROOT:-${MESSAGING_CWD:-/workspace/main}}"
+TASKS_DIR="${HERMES_TASKS_DIR:-${AGENT_ROOT}/tasks}"
+LOG_DIR="${HERMES_TASK_LOG_DIR:-/opt/data/cron/output}"
+LOG_FILE="${LOG_DIR}/manual-runs.log"
+HOSTNAME_NOW="$(hostname 2>/dev/null || echo unknown-host)"
+TS_NOW="$(date '+%Y-%m-%d %H:%M:%S')"
 
-log "start"
+mkdir -p "${LOG_DIR}"
 
+log() {
+  printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${TASK_NAME}" "$*" | tee -a "${LOG_FILE}"
+}
+
+load_env_file() {
+  file_path="$1"
+  if [ -f "${file_path}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${file_path}"
+    set +a
+    log "loaded env from ${file_path}"
+  fi
+}
+
+notify_telegram() {
+  text="$1"
+  if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+    log "telegram env missing, skip notify"
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    log "curl not found, skip telegram notify"
+    return 0
+  fi
+
+  if curl -fsS \
+    --connect-timeout 10 \
+    --max-time 30 \
+    -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -d "chat_id=${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=${text}" >/dev/null; then
+    return 0
+  fi
+
+  log "telegram notify failed"
+  return 1
+}
+
+run_script() {
+  script_path="$1"
+  if [ ! -f "${script_path}" ]; then
+    log "script not found: ${script_path}"
+    return 127
+  fi
+  if [ ! -x "${script_path}" ]; then
+    chmod +x "${script_path}" 2>/dev/null || true
+  fi
+
+  log "running ${script_path}"
+  "${script_path}" "${TASK_NAME}" >>"${LOG_FILE}" 2>&1
+}
+
+# 按优先级加载配置，后加载覆盖先加载
+load_env_file "/opt/data/.env"
+load_env_file "${AGENT_ROOT}/.env"
+
+TASK_SCRIPT="${TASKS_DIR}/${TASK_NAME}.sh"
+if [ ! -f "${TASK_SCRIPT}" ]; then
+  TASK_SCRIPT="${TASKS_DIR}/$(echo "${TASK_NAME}" | tr ' ' '_').sh"
+fi
+
+# 可读映射：给中文任务名稳定绑定脚本文件
 case "${TASK_NAME}" in
-  # --- 根据你的业务扩展 case 分支 ---
-  "每日 Reddit 爬取")
-    log "running crawl_reddit.py"
-    python /app/crawl_reddit.py
-    ;;
-  "日报生成")
-    log "running daily_report.py"
-    python /app/daily_report.py
-    ;;
-  "清理日志")
-    log "rotating logs"
-    find /var/log -name "*.log" -mtime +7 -delete
-    ;;
-  *)
-    # 兜底：把 task name 原样作为 shell 命令跑（慎用；更安全是显式列枚举）
-    # eval "${TASK_NAME}"
-    log "未知任务，忽略"
-    exit 1
+  "每日AI热点简报")
+    TASK_SCRIPT="${TASKS_DIR}/daily_ai_brief.sh"
     ;;
 esac
 
-log "done"
+START_TEXT="[$TS_NOW] ✅ 开始执行任务: ${TASK_NAME} @ ${HOSTNAME_NOW}"
+notify_telegram "${START_TEXT}" || true
+log "start"
+
+if run_script "${TASK_SCRIPT}"; then
+  END_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+  END_TEXT="[$END_TS] ✅ 任务执行成功: ${TASK_NAME} @ ${HOSTNAME_NOW}"
+  notify_telegram "${END_TEXT}" || true
+  log "done"
+  exit 0
+fi
+
+END_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+END_TEXT="[$END_TS] ❌ 任务执行失败: ${TASK_NAME} @ ${HOSTNAME_NOW}"
+notify_telegram "${END_TEXT}" || true
+log "failed"
+exit 1

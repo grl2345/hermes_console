@@ -9,6 +9,7 @@ cron 到点触发时：
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import uuid
@@ -22,6 +23,7 @@ from apscheduler.triggers.cron import CronTrigger
 from cron_descriptor import ExpressionDescriptor, Options
 
 from ..config import settings
+from ..docker_client import get_client
 from ..schemas.scheduled_task import ScheduledTask
 from .agents import AgentNotFoundError, _find_container
 from .tasks import TaskNotFoundError, task_store as tasks_task_store, trigger_task
@@ -255,14 +257,204 @@ def _record_to_api(rec: ScheduledTaskRecord) -> ScheduledTask:
     )
 
 
+def _map_job_status(raw_status: Optional[str]) -> Optional[str]:
+    """把 cron jobs.json 的状态映射到前端 TaskStatus。"""
+    if not raw_status:
+        return None
+    normalized = raw_status.strip().lower()
+    if normalized in {"ok", "success", "succeeded"}:
+        return "success"
+    if normalized in {"fail", "failed", "error"}:
+        return "failed"
+    if normalized in {"running", "executing"}:
+        return "running"
+    return "pending"
+
+
+def _list_scheduled_from_container_cron(container, agent_id: str) -> list[ScheduledTask]:
+    """从容器内 /opt/data/cron/jobs.json 读取定时任务（优先真实数据源）。"""
+    # 先走容器 label 覆盖，再回退默认目录
+    labels = container.labels or {}
+    cron_dir = (labels.get("hermes.cronDir") or "/opt/data/cron").rstrip("/")
+    jobs_file = f"{cron_dir}/jobs.json"
+
+    # 容器不运行时直接返回空
+    state = (container.attrs or {}).get("State", {}) or {}
+    if state.get("Status") != "running" or state.get("Paused"):
+        return []
+
+    # jobs.json 可能不存在（视为暂无任务）
+    try:
+        result = container.exec_run(["cat", jobs_file], demux=False)
+        exit_code = result.exit_code or 0
+        output = result.output or b""
+        if isinstance(output, tuple):
+            output = (output[0] or b"") + (output[1] or b"")
+    except Exception:  # noqa: BLE001
+        logger.exception("读取 jobs.json 失败: %s", jobs_file)
+        return []
+    if exit_code != 0:
+        return []
+
+    try:
+        payload = json.loads(output.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        logger.warning("jobs.json 解析失败: %s", jobs_file)
+        return []
+
+    jobs = payload.get("jobs") if isinstance(payload, dict) else None
+    if not isinstance(jobs, list):
+        return []
+
+    result: list[ScheduledTask] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_id = str(job.get("id") or "")
+        name = str(job.get("name") or "")
+        if not job_id or not name:
+            continue
+        schedule = job.get("schedule") if isinstance(job.get("schedule"), dict) else {}
+        cron_expr = str(schedule.get("expr") or job.get("schedule_display") or "")
+        if not cron_expr:
+            continue
+        cron_desc = str(schedule.get("display") or job.get("schedule_display") or cron_expr)
+        last_status = _map_job_status(job.get("last_status"))
+
+        result.append(
+            ScheduledTask(
+                id=job_id,
+                agentId=agent_id,
+                name=name,
+                cron=cron_expr,
+                cronDescription=cron_desc,
+                nextRun=job.get("next_run_at"),
+                enabled=bool(job.get("enabled", True)),
+                lastRun=job.get("last_run_at"),
+                lastStatus=last_status,  # type: ignore[arg-type]
+            )
+        )
+
+    result.sort(key=lambda t: t.name.lower())
+    return result
+
+
+def _get_hermes_containers():
+    client = get_client()
+    containers = client.containers.list(all=True)
+    return [c for c in containers if (c.labels or {}).get("hermes.agent") == "true"]
+
+
+def _agent_id_for_container(container) -> str:
+    labels = container.labels or {}
+    return labels.get("hermes.id") or container.short_id or container.id[:12]
+
+
+def _load_cron_payload(container) -> tuple[str, dict]:
+    labels = container.labels or {}
+    cron_dir = (labels.get("hermes.cronDir") or "/opt/data/cron").rstrip("/")
+    jobs_file = f"{cron_dir}/jobs.json"
+    result = container.exec_run(["cat", jobs_file], demux=False)
+    if (result.exit_code or 0) != 0:
+        raise ScheduledTaskNotFoundError(jobs_file)
+    output = result.output or b""
+    if isinstance(output, tuple):
+        output = (output[0] or b"") + (output[1] or b"")
+    payload = json.loads(output.decode("utf-8", errors="replace"))
+    if not isinstance(payload, dict):
+        raise ScheduledTaskValidationError("jobs.json 格式错误")
+    if not isinstance(payload.get("jobs"), list):
+        payload["jobs"] = []
+    return jobs_file, payload
+
+
+def _save_cron_payload(container, jobs_file: str, payload: dict) -> None:
+    content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    encoded = content.encode("utf-8").hex()
+    cmd = [
+        "sh",
+        "-c",
+        (
+            "python3 - <<'PY'\n"
+            "from pathlib import Path\n"
+            f"hex_data = '{encoded}'\n"
+            f"target = Path({json.dumps(jobs_file)})\n"
+            "target.parent.mkdir(parents=True, exist_ok=True)\n"
+            "target.write_bytes(bytes.fromhex(hex_data))\n"
+            "PY"
+        ),
+    ]
+    result = container.exec_run(cmd, demux=False)
+    if (result.exit_code or 0) != 0:
+        raise ScheduledTaskValidationError("写回 jobs.json 失败")
+
+
+def _find_cron_job(rec_id: str):
+    for container in _get_hermes_containers():
+        agent_id = _agent_id_for_container(container)
+        try:
+            jobs_file, payload = _load_cron_payload(container)
+        except Exception:
+            continue
+        jobs = payload.get("jobs") or []
+        for idx, job in enumerate(jobs):
+            if isinstance(job, dict) and str(job.get("id") or "") == rec_id:
+                return container, agent_id, jobs_file, payload, idx, job
+    return None
+
+
+def _job_to_api(agent_id: str, job: dict) -> ScheduledTask:
+    schedule = job.get("schedule") if isinstance(job.get("schedule"), dict) else {}
+    cron_expr = str(schedule.get("expr") or job.get("schedule_display") or "")
+    cron_desc = str(schedule.get("display") or job.get("schedule_display") or cron_expr)
+    return ScheduledTask(
+        id=str(job.get("id") or ""),
+        agentId=agent_id,
+        name=str(job.get("name") or ""),
+        cron=cron_expr,
+        cronDescription=cron_desc,
+        nextRun=job.get("next_run_at"),
+        enabled=bool(job.get("enabled", True)),
+        lastRun=job.get("last_run_at"),
+        lastStatus=_map_job_status(job.get("last_status")),  # type: ignore[arg-type]
+    )
+
+
 # ---------- 对外 API ----------
 
 
 def list_scheduled(agent_id: Optional[str] = None) -> list[ScheduledTask]:
+    # 优先返回容器真实 cron 文件中的任务
+    if agent_id is not None:
+        container = _find_container(agent_id)
+        if container is None:
+            raise AgentNotFoundError(agent_id)
+        from_cron = _list_scheduled_from_container_cron(container, agent_id)
+        if from_cron:
+            return from_cron
+
+    if agent_id is None:
+        # 聚合所有 Hermes 容器的 cron 任务
+        try:
+            client = get_client()
+            containers = client.containers.list(all=True)
+        except Exception:  # noqa: BLE001
+            containers = []
+        merged: list[ScheduledTask] = []
+        for c in containers:
+            labels = c.labels or {}
+            if labels.get("hermes.agent") != "true":
+                continue
+            a_id = labels.get("hermes.id") or c.short_id or c.id[:12]
+            merged.extend(_list_scheduled_from_container_cron(c, a_id))
+        if merged:
+            merged.sort(key=lambda t: t.name.lower())
+            return merged
+
+    # 回退：兼容旧的内存调度模型
     records = store.all()
     if agent_id is not None:
         records = [r for r in records if r.agent_id == agent_id]
-    # 按 name 稳定排序
     records.sort(key=lambda r: r.name.lower())
     return [_record_to_api(r) for r in records]
 
@@ -351,37 +543,74 @@ def delete_scheduled(rec_id: str) -> None:
 
 def toggle_scheduled(rec_id: str, enabled: bool) -> ScheduledTask:
     rec = store.get(rec_id)
-    if rec is None:
+    if rec is not None:
+        rec.enabled = enabled
+        store.add(rec)
+        _unregister(rec_id)
+        if enabled:
+            _register(rec)
+        return _record_to_api(rec)
+
+    # 回退：处理来自 jobs.json 的真实任务 ID
+    found = _find_cron_job(rec_id)
+    if found is None:
         raise ScheduledTaskNotFoundError(rec_id)
-    rec.enabled = enabled
-    store.add(rec)
-    _unregister(rec_id)
+    container, agent_id, jobs_file, payload, idx, job = found
+    job["enabled"] = enabled
+    # 与 agent 侧语义保持一致
     if enabled:
-        _register(rec)
-    return _record_to_api(rec)
+        job["state"] = "scheduled"
+        job["paused_at"] = None
+    else:
+        job["state"] = "paused"
+        job["paused_at"] = datetime.now(_get_tz()).isoformat()
+    payload["jobs"][idx] = job
+    _save_cron_payload(container, jobs_file, payload)
+    return _job_to_api(agent_id, job)
 
 
 def run_scheduled_now(rec_id: str) -> ScheduledTask:
     """立即触发一次（不影响 cron 下次时间，也不因 disabled 跳过）。"""
     rec = store.get(rec_id)
-    if rec is None:
+    if rec is not None:
+        container = _find_container(rec.agent_id)
+        if container is None:
+            raise AgentNotFoundError(rec.agent_id)
+
+        handler = _task_handler_for(container)
+        task = trigger_task(
+            agent_id=rec.agent_id,
+            name=rec.name,
+            command=[handler, rec.name],
+            source="manual",  # 手动触发走 manual 便于区分
+        )
+        rec.last_run = datetime.now(_get_tz())
+        rec.last_task_id = task.id
+        store.add(rec)
+        return _record_to_api(rec)
+
+    # 回退：处理来自 jobs.json 的真实任务 ID
+    found = _find_cron_job(rec_id)
+    if found is None:
         raise ScheduledTaskNotFoundError(rec_id)
-
-    container = _find_container(rec.agent_id)
-    if container is None:
-        raise AgentNotFoundError(rec.agent_id)
-
+    container, agent_id, jobs_file, payload, idx, job = found
+    name = str(job.get("name") or rec_id)
     handler = _task_handler_for(container)
     task = trigger_task(
-        agent_id=rec.agent_id,
-        name=rec.name,
-        command=[handler, rec.name],
-        source="manual",  # 手动触发走 manual 便于区分
+        agent_id=agent_id,
+        name=name,
+        command=[handler, name],
+        source="manual",
     )
-    rec.last_run = datetime.now(_get_tz())
-    rec.last_task_id = task.id
-    store.add(rec)
-    return _record_to_api(rec)
+    now_iso = datetime.now(_get_tz()).isoformat()
+    job["last_run_at"] = now_iso
+    job["last_status"] = "ok"
+    job["state"] = "scheduled"
+    payload["jobs"][idx] = job
+    _save_cron_payload(container, jobs_file, payload)
+    api_task = _job_to_api(agent_id, job)
+    api_task.lastStatus = task.status
+    return api_task
 
 
 # ---------- 生命周期钩子 ----------
